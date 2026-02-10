@@ -93,10 +93,12 @@ def run(
     max_trials: int = 100,
     seed: int = 123,
     stabilizer: Callable[[dict], None] | None = None,
+    objective_fn: Callable[[dict], float] | None = None,
 ) -> dict:
     random.seed(seed)
     np.random.seed(seed)
     stabilize = stabilizer or (lambda _: None)
+    objective = objective_fn or evaluate
 
     bo = SimpleBO(parameters)
     initial = latin_hypercube(parameters, init_trials)
@@ -106,11 +108,11 @@ def run(
     for t in range(max_trials):
         proposal = initial[t] if t < init_trials else denormalize(parameters, bo.suggest())
         stabilize(proposal)
-        objective = evaluate(proposal)
-        bo.observe(normalize(parameters, proposal), objective)
-        if objective > best["objective"]:
-            best = {"params": proposal, "objective": objective}
-        print(f"trial {t:02d} | objective={objective:.4f} | params={proposal}")
+        objective_value = objective(proposal)
+        bo.observe(normalize(parameters, proposal), objective_value)
+        if objective_value > best["objective"]:
+            best = {"params": proposal, "objective": objective_value}
+        print(f"trial {t:02d} | objective={objective_value:.4f} | params={proposal}")
 
     print("\nBest found:")
     print(best)
