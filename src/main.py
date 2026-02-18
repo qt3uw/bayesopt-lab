@@ -119,9 +119,5 @@ def run(
     return best
 
 
-if __name__ == "__main__":
-    PARAMS = [
-        Parameter("noise_amp", (0.0, 5.0)),  # volts
-        Parameter("noise_freq", (10.0, 2000.0)),  # Hz
-    ]
-    run(PARAMS)
+# if __name__ == "__main__":
+    

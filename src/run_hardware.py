@@ -8,7 +8,7 @@ from pathlib import Path
 from main import Parameter, run as run_bo
 
 
-_ARTIQ_DRIVER_PATH = Path(__file__).with_name("artiq.py")
+_ARTIQ_DRIVER_PATH = Path(__file__).with_name("hardware_driver.py")
 _SPEC = spec_from_file_location("local_artiq_driver", _ARTIQ_DRIVER_PATH)
 if _SPEC is None or _SPEC.loader is None:
     raise RuntimeError(f"Failed to load local ARTIQ driver module at {_ARTIQ_DRIVER_PATH}")
@@ -46,7 +46,7 @@ class HardwareBORunner(ZotinoSamplerExperiment):
 
         self.init_hardware()
         best = run_bo(
-            parameters=[Parameter("dac_voltage", (-10.0, 10.0))],
+            parameters=[Parameter("dac_voltage", (1.5, 1.6))],
             init_trials=self.init_trials,
             max_trials=self.max_trials,
             seed=self.seed,

@@ -1,8 +1,8 @@
 """Minimal ARTIQ DAC->ADC driver for Bayesian optimization experiments.
 
 This module is intentionally small:
-- Write one Zotino DAC channel.
-- Read one Sampler ADC channel.
+- Write one zotino0 DAC channel.
+- Read one sampler0 ADC channel.
 - Return a scalar objective based on a target voltage.
 """
 
@@ -35,12 +35,11 @@ except Exception as exc:  # pragma: no cover - allows import on non-ARTIQ hosts
     ms = 1e-3
     us = 1e-6
 
-
-@dataclass
 class MeasurementResult:
-    setpoint_v: float
-    measured_v: float
-    objective: float
+    def __init__(self, setpoint_v: float, measured_v: float, objective: float):
+        self.setpoint_v = setpoint_v
+        self.measured_v = measured_v
+        self.objective = objective
 
 
 class ZotinoSamplerExperiment(EnvExperiment):
@@ -51,8 +50,8 @@ class ZotinoSamplerExperiment(EnvExperiment):
             return
 
         self.setattr_device("core")
-        self.setattr_device("zotino")
-        self.setattr_device("sampler")
+        self.setattr_device("zotino0")
+        self.setattr_device("sampler0")
 
         self.setattr_argument("dac_channel", NumberValue(default=0, step=1, ndecimals=0))
         self.setattr_argument("adc_channel", NumberValue(default=0, step=1, ndecimals=0))
@@ -83,14 +82,14 @@ class ZotinoSamplerExperiment(EnvExperiment):
         self.core.reset()
         self.core.break_realtime()
 
-        self.zotino.init()
+        self.zotino0.init()
         delay(1 * ms)
 
-        self.sampler.init()
+        self.sampler0.init()
         delay(5 * ms)
 
         # Unity gain (mu=0) on selected ADC channel.
-        self.sampler.set_gain_mu(self.adc_channel, 0)
+        self.sampler0.set_gain_mu(self.adc_channel, 0)
         delay(100 * us)
 
     @kernel
@@ -102,10 +101,10 @@ class ZotinoSamplerExperiment(EnvExperiment):
         if dac_voltage < -10.0:
             dac_voltage = -10.0
 
-        self.zotino.set_dac([dac_voltage], [self.dac_channel])
+        self.zotino0.set_dac([dac_voltage], [self.dac_channel])
         delay(200 * us)
 
-        self.sampler.sample(self._sample_buffer)
+        self.sampler0.sample(self._sample_buffer)
         return self._sample_buffer[self.adc_channel]
 
     def evaluate_for_params(self, params: dict[str, float]) -> float:
