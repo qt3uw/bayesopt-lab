@@ -1,8 +1,10 @@
-"""General ARTIQ scaffolding for Bayesian optimization experiments."""
+"""General ARTIQ scaffolding for configurable Bayesian optimization experiments."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from main import Parameter, run as run_bo
@@ -76,11 +78,14 @@ class BOExperimentConfig:
 class ConfigurableBOExperiment(EnvExperiment):
     """General BO runner.
 
-    Users configure experiment shape declaratively through CONFIG and then
-    override only hardware-specific hooks.
+    You can either:
+    - set CONFIG directly in the subclass, or
+    - set DESCRIPTION_PATH (+ optional DEVICE_DB_PATH) and let config auto-load.
     """
 
     CONFIG = BOExperimentConfig()
+    DESCRIPTION_PATH: str | None = None
+    DEVICE_DB_PATH = "device_db.py"
 
     def _ensure_artiq(self) -> None:
         if not ARTIQ_AVAILABLE:
@@ -88,6 +93,147 @@ class ConfigurableBOExperiment(EnvExperiment):
                 "ARTIQ is not available in this Python environment. "
                 f"Import error: {ARTIQ_IMPORT_ERROR}"
             )
+
+    def _resolve_path(self, path_hint: str) -> Path:
+        path = Path(path_hint)
+        if path.is_absolute():
+            return path
+        cwd_path = Path.cwd() / path
+        if cwd_path.exists():
+            return cwd_path
+        module_dir_path = Path(__file__).resolve().parent / path
+        return module_dir_path
+
+    def _load_device_db(self, device_db_path: Path) -> dict[str, Any]:
+        namespace: dict[str, Any] = {}
+        code = device_db_path.read_text(encoding="utf-8")
+        exec(compile(code, str(device_db_path), "exec"), namespace)  # noqa: S102
+        device_db = namespace.get("device_db")
+        if not isinstance(device_db, dict):
+            raise RuntimeError(f"{device_db_path} must define a dict named 'device_db'.")
+        return device_db
+
+    def _resolve_device_roles(
+        self, device_db: dict[str, Any], role_descriptions: list[dict[str, Any]]
+    ) -> dict[str, str]:
+        role_map: dict[str, str] = {}
+        used_devices: set[str] = set()
+        for role_spec in role_descriptions:
+            role = str(role_spec["role"])
+            explicit_device = role_spec.get("device")
+            required = bool(role_spec.get("required", True))
+            selected_device: str | None = None
+
+            if isinstance(explicit_device, str):
+                if explicit_device in device_db:
+                    selected_device = explicit_device
+                elif required:
+                    raise RuntimeError(
+                        f"Description requires device '{explicit_device}' for role '{role}', "
+                        "but it was not found in device_db."
+                    )
+            else:
+                module = role_spec.get("module")
+                cls = role_spec.get("class")
+                for name, entry in device_db.items():
+                    if name in used_devices or not isinstance(entry, dict):
+                        continue
+                    if module is not None and entry.get("module") != module:
+                        continue
+                    if cls is not None and entry.get("class") != cls:
+                        continue
+                    selected_device = name
+                    break
+                if selected_device is None and required:
+                    raise RuntimeError(
+                        f"Unable to resolve required role '{role}' from device_db "
+                        f"with filters module={module!r}, class={cls!r}."
+                    )
+
+            if selected_device is not None:
+                role_map[role] = selected_device
+                used_devices.add(selected_device)
+
+        return role_map
+
+    def _load_config_from_description(
+        self, description_path: Path, device_db_path: Path
+    ) -> tuple[BOExperimentConfig, dict[str, str], dict[str, Any]]:
+        description = json.loads(description_path.read_text(encoding="utf-8"))
+        if not isinstance(description, dict):
+            raise RuntimeError("Description file must be a JSON object.")
+
+        device_db = self._load_device_db(device_db_path)
+        role_descriptions = description.get("device_roles", [])
+        if not isinstance(role_descriptions, list):
+            raise RuntimeError("'device_roles' must be a list.")
+        role_map = self._resolve_device_roles(device_db, role_descriptions)
+
+        device_names = [str(name) for name in description.get("devices", [])]
+        for role_device in role_map.values():
+            if role_device not in device_names:
+                device_names.append(role_device)
+        devices = [DeviceSpec(name) for name in device_names]
+
+        channels: list[ChannelSpec] = []
+        for raw in description.get("channels", []):
+            channels.append(
+                ChannelSpec(
+                    name=str(raw["name"]),
+                    default=int(raw.get("default", 0)),
+                    minimum=int(raw.get("minimum", 0)),
+                    maximum=int(raw.get("maximum", 31)),
+                )
+            )
+
+        parameters: list[Parameter] = []
+        for raw in description.get("parameters", []):
+            bounds = raw["bounds"]
+            if not isinstance(bounds, list) or len(bounds) != 2:
+                raise RuntimeError(f"Parameter '{raw.get('name')}' must define 2-item bounds list.")
+            parameters.append(Parameter(str(raw["name"]), (float(bounds[0]), float(bounds[1]))))
+
+        data_arguments: list[NumericArgSpec] = []
+        for raw in description.get("data_arguments", []):
+            data_arguments.append(
+                NumericArgSpec(
+                    name=str(raw["name"]),
+                    default=float(raw["default"]),
+                    minimum=float(raw["minimum"]) if "minimum" in raw else None,
+                    maximum=float(raw["maximum"]) if "maximum" in raw else None,
+                    unit=str(raw["unit"]) if "unit" in raw else None,
+                    integer=bool(raw.get("integer", False)),
+                    step=float(raw["step"]) if "step" in raw else None,
+                )
+            )
+
+        config = BOExperimentConfig(
+            devices=devices,
+            channels=channels,
+            parameters=parameters,
+            data_arguments=data_arguments,
+        )
+        objective_spec = description.get("objective", {})
+        if not isinstance(objective_spec, dict):
+            raise RuntimeError("'objective' must be a JSON object if provided.")
+        return config, role_map, objective_spec
+
+    def _active_config(self) -> BOExperimentConfig:
+        config = getattr(self, "_resolved_config", None)
+        if config is not None:
+            return config
+
+        self.device_roles: dict[str, str] = {}
+        self.objective_spec: dict[str, Any] = {}
+        config = self.CONFIG
+        if self.DESCRIPTION_PATH is not None:
+            description_path = self._resolve_path(self.DESCRIPTION_PATH)
+            device_db_path = self._resolve_path(self.DEVICE_DB_PATH)
+            config, self.device_roles, self.objective_spec = self._load_config_from_description(
+                description_path, device_db_path
+            )
+        self._resolved_config = config
+        return config
 
     def _number_value_for(self, spec: NumericArgSpec) -> NumberValue:
         kwargs: dict[str, Any] = {"default": spec.default}
@@ -106,11 +252,12 @@ class ConfigurableBOExperiment(EnvExperiment):
     def build(self):
         if not ARTIQ_AVAILABLE:
             return
+        config = self._active_config()
 
-        for device in self.CONFIG.devices:
+        for device in config.devices:
             self.setattr_device(device.name)
 
-        for channel in self.CONFIG.channels:
+        for channel in config.channels:
             self.setattr_argument(
                 channel.name,
                 NumberValue(
@@ -122,7 +269,7 @@ class ConfigurableBOExperiment(EnvExperiment):
                 ),
             )
 
-        for argument in self.CONFIG.data_arguments:
+        for argument in config.data_arguments:
             self.setattr_argument(argument.name, self._number_value_for(argument))
 
         self.setattr_argument("init_trials", NumberValue(default=5, step=1, ndecimals=0, min=1))
@@ -132,11 +279,12 @@ class ConfigurableBOExperiment(EnvExperiment):
     def prepare(self):
         if not ARTIQ_AVAILABLE:
             return
+        config = self._active_config()
 
-        for channel in self.CONFIG.channels:
+        for channel in config.channels:
             setattr(self, channel.name, int(getattr(self, channel.name)))
 
-        for argument in self.CONFIG.data_arguments:
+        for argument in config.data_arguments:
             current = getattr(self, argument.name)
             casted = int(current) if argument.integer else float(current)
             setattr(self, argument.name, casted)
@@ -146,9 +294,10 @@ class ConfigurableBOExperiment(EnvExperiment):
         self.seed = int(self.seed)
 
     def parameter_space(self) -> list[Parameter]:
-        if not self.CONFIG.parameters:
-            raise RuntimeError("CONFIG.parameters must include at least one Parameter.")
-        return self.CONFIG.parameters
+        config = self._active_config()
+        if not config.parameters:
+            raise RuntimeError("Experiment config must include at least one Parameter.")
+        return config.parameters
 
     def setup_bo_run(self) -> None:
         """Optional setup hook called once before the BO loop."""

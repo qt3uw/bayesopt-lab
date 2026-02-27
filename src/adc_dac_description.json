@@ -1,0 +1,63 @@
+{
+  "device_roles": [
+    {
+      "role": "core",
+      "module": "artiq.coredevice.core",
+      "required": true
+    },
+    {
+      "role": "dac",
+      "module": "artiq.coredevice.zotino",
+      "required": true
+    },
+    {
+      "role": "adc",
+      "module": "artiq.coredevice.sampler",
+      "required": true
+    }
+  ],
+  "channels": [
+    {
+      "name": "dac_channel",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 31
+    },
+    {
+      "name": "adc_channel",
+      "default": 0,
+      "minimum": 0,
+      "maximum": 7
+    }
+  ],
+  "parameters": [
+    {
+      "name": "dac_voltage",
+      "bounds": [
+        1.5,
+        1.6
+      ]
+    }
+  ],
+  "data_arguments": [
+    {
+      "name": "target_voltage",
+      "default": 1.0,
+      "minimum": -10.0,
+      "maximum": 10.0,
+      "unit": "V"
+    },
+    {
+      "name": "initial_dac_voltage",
+      "default": 0.0,
+      "minimum": -10.0,
+      "maximum": 10.0,
+      "unit": "V"
+    }
+  ],
+  "objective": {
+    "kind": "target_voltage_tracking",
+    "maximize": true,
+    "description": "Maximize negative squared error between measured ADC voltage and target_voltage."
+  }
+}

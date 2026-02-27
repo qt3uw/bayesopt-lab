@@ -4,14 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from main import Parameter
 from hardware_driver import (
     ARTIQ_AVAILABLE,
-    BOExperimentConfig,
-    ChannelSpec,
     ConfigurableBOExperiment,
-    DeviceSpec,
-    NumericArgSpec,
     delay,
     kernel,
     ms,
@@ -29,23 +24,11 @@ class MeasurementResult:
 class ADCDACExperiment(ConfigurableBOExperiment):
     """Example ADC/DAC BO experiment using Zotino and Sampler.
 
-    Override CONFIG and evaluate() for custom experiments.
+    This example auto-builds CONFIG from device_db + description JSON.
     """
 
-    CONFIG = BOExperimentConfig(
-        devices=[DeviceSpec("core"), DeviceSpec("zotino0"), DeviceSpec("sampler0")],
-        channels=[
-            ChannelSpec("dac_channel", default=0, minimum=0, maximum=31),
-            ChannelSpec("adc_channel", default=0, minimum=0, maximum=7),
-        ],
-        parameters=[Parameter("dac_voltage", (1.5, 1.6))],
-        data_arguments=[
-            NumericArgSpec("target_voltage", default=1.0, minimum=-10.0, maximum=10.0, unit="V"),
-            NumericArgSpec(
-                "initial_dac_voltage", default=0.0, minimum=-10.0, maximum=10.0, unit="V"
-            ),
-        ],
-    )
+    DESCRIPTION_PATH = "src/adc_dac_description.json"
+    DEVICE_DB_PATH = "device_db.py"
 
     def prepare(self):
         super().prepare()
@@ -55,29 +38,37 @@ class ADCDACExperiment(ConfigurableBOExperiment):
 
     @kernel
     def init_hardware(self):
-        self.core.reset()
-        self.core.break_realtime()
+        core = getattr(self, self.device_roles["core"])
+        dac = getattr(self, self.device_roles["dac"])
+        adc = getattr(self, self.device_roles["adc"])
 
-        self.zotino0.init()
+        core.reset()
+        core.break_realtime()
+
+        dac.init()
         delay(1 * ms)
 
-        self.sampler0.init()
+        adc.init()
         delay(5 * ms)
-        self.sampler0.set_gain_mu(self.adc_channel, 0)
+        adc.set_gain_mu(self.adc_channel, 0)
         delay(100 * us)
 
     @kernel
     def measure_once(self, dac_voltage: float) -> float:
-        self.core.break_realtime()
+        core = getattr(self, self.device_roles["core"])
+        dac = getattr(self, self.device_roles["dac"])
+        adc = getattr(self, self.device_roles["adc"])
+
+        core.break_realtime()
 
         if dac_voltage > 10.0:
             dac_voltage = 10.0
         if dac_voltage < -10.0:
             dac_voltage = -10.0
 
-        self.zotino0.set_dac([dac_voltage], [self.dac_channel])
+        dac.set_dac([dac_voltage], [self.dac_channel])
         delay(200 * us)
-        self.sampler0.sample(self._sample_buffer)
+        adc.sample(self._sample_buffer)
         return self._sample_buffer[self.adc_channel]
 
     def setup_bo_run(self) -> None:
