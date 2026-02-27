@@ -1,4 +1,4 @@
-"""ARTIQ entrypoint: optimize Urukul amplitude from Sampler photodiode readout."""
+"""ARTIQ entrypoint: optimize Urukul amplitude from SUServo photodiode readout."""
 
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ class PowerMeasurement:
 
 
 class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
-    """Bayesian optimization for Urukul amplitude using Sampler photodiode voltage."""
+    """Bayesian optimization for Urukul amplitude using SUServo ADC readout."""
 
     CONFIG = BOExperimentConfig(
         devices=[
             DeviceSpec("core"),
             DeviceSpec("urukul0_cpld"),
             DeviceSpec("urukul0_dds"),
-            DeviceSpec("sampler0"),
+            DeviceSpec("suservo0"),
         ],
         channels=[
             ChannelSpec("adc_channel", default=0, minimum=0, maximum=7),
@@ -56,12 +56,9 @@ class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
 
     def prepare(self):
         super().prepare()
-        if not ARTIQ_AVAILABLE:
-            return
-        self._sample_buffer = [0.0] * 8
 
     def _ensure_devices_present(self) -> None:
-        missing = [name for name in ("core", "urukul0_cpld", "urukul0_dds", "sampler0") if not hasattr(self, name)]
+        missing = [name for name in ("core", "urukul0_cpld", "urukul0_dds", "suservo0") if not hasattr(self, name)]
         if missing:
             raise RuntimeError(
                 "Missing required devices in device_db for this experiment: "
@@ -78,9 +75,9 @@ class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
         self.urukul0_dds.sw.off()
         delay(1 * ms)
 
-        self.sampler0.init()
+        self.suservo0.init()
         delay(5 * ms)
-        self.sampler0.set_gain_mu(self.adc_channel, 0)
+        self.suservo0.set_pgia_mu(self.adc_channel, 0)
         delay(100 * us)
 
     @kernel
@@ -96,15 +93,14 @@ class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
         self.urukul0_dds.sw.on()
         delay(self.settle_time_ms * ms)
 
-        total = 0.0
+        total_v = 0.0
         n = int(self.adc_averages)
         i = 0
         while i < n:
-            self.sampler0.sample(self._sample_buffer)
-            total += self._sample_buffer[self.adc_channel]
+            total_v += self.suservo0.get_adc(self.adc_channel)
             delay(20 * us)
             i += 1
-        return total / n
+        return total_v / n
 
     def setup_bo_run(self) -> None:
         self._ensure_devices_present()
