@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
 from typing import Callable, List, Protocol, Tuple
 
 import numpy as np
@@ -14,10 +13,10 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel
 
 
-@dataclass
 class Parameter:
-    name: str
-    bounds: Tuple[float, float]
+    def __init__(self, name: str, bounds: Tuple[float, float]):
+        self.name = name
+        self.bounds = bounds
 
 
 class BOExperiment(Protocol):

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from main import Parameter
 from hardware_driver import (
     ARTIQ_AVAILABLE,
@@ -19,11 +17,11 @@ from hardware_driver import (
 )
 
 
-@dataclass
 class MeasurementResult:
-    setpoint_v: float
-    measured_v: float
-    objective: float
+    def __init__(self, setpoint_v: float, measured_v: float, objective: float):
+        self.setpoint_v = setpoint_v
+        self.measured_v = measured_v
+        self.objective = objective
 
 
 class ADCDACExperiment(ConfigurableBOExperiment):

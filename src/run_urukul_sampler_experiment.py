@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from main import Parameter
 from hardware_driver import (
     ARTIQ_AVAILABLE,
@@ -19,12 +17,12 @@ from hardware_driver import (
 )
 
 
-@dataclass
 class PowerMeasurement:
-    amplitude: float
-    photodiode_v: float
-    optical_power_nw: float
-    objective: float
+    def __init__(self, amplitude: float, photodiode_v: float, optical_power_nw: float, objective: float):
+        self.amplitude = amplitude
+        self.photodiode_v = photodiode_v
+        self.optical_power_nw = optical_power_nw
+        self.objective = objective
 
 
 class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):

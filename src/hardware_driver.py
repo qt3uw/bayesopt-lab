@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from main import Parameter, run as run_bo
@@ -33,44 +32,59 @@ except Exception as exc:  # pragma: no cover - allows import on non-ARTIQ hosts
     us = 1e-6
 
 
-@dataclass(frozen=True)
 class DeviceSpec:
     """ARTIQ device to bind with setattr_device()."""
 
-    name: str
+    def __init__(self, name: str):
+        self.name = name
 
 
-@dataclass(frozen=True)
 class ChannelSpec:
     """Integer-valued channel argument (e.g. dac_channel, adc_channel)."""
 
-    name: str
-    default: int = 0
-    minimum: int = 0
-    maximum: int = 31
+    def __init__(self, name: str, default: int = 0, minimum: int = 0, maximum: int = 31):
+        self.name = name
+        self.default = default
+        self.minimum = minimum
+        self.maximum = maximum
 
 
-@dataclass(frozen=True)
 class NumericArgSpec:
     """Numeric host argument exposed with NumberValue."""
 
-    name: str
-    default: float
-    minimum: float | None = None
-    maximum: float | None = None
-    unit: str | None = None
-    integer: bool = False
-    step: float | None = None
+    def __init__(
+        self,
+        name: str,
+        default: float,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        unit: str | None = None,
+        integer: bool = False,
+        step: float | None = None,
+    ):
+        self.name = name
+        self.default = default
+        self.minimum = minimum
+        self.maximum = maximum
+        self.unit = unit
+        self.integer = integer
+        self.step = step
 
 
-@dataclass(frozen=True)
 class BOExperimentConfig:
     """Declarative config used to build a BO experiment."""
 
-    devices: list[DeviceSpec] = field(default_factory=list)
-    channels: list[ChannelSpec] = field(default_factory=list)
-    parameters: list[Parameter] = field(default_factory=list)
-    data_arguments: list[NumericArgSpec] = field(default_factory=list)
+    def __init__(
+        self,
+        devices: list[DeviceSpec] | None = None,
+        channels: list[ChannelSpec] | None = None,
+        parameters: list[Parameter] | None = None,
+        data_arguments: list[NumericArgSpec] | None = None,
+    ):
+        self.devices = [] if devices is None else devices
+        self.channels = [] if channels is None else channels
+        self.parameters = [] if parameters is None else parameters
+        self.data_arguments = [] if data_arguments is None else data_arguments
 
 
 class ConfigurableBOExperiment(EnvExperiment):
@@ -167,4 +181,3 @@ class ConfigurableBOExperiment(EnvExperiment):
             seed=self.seed,
         )
         print(f"Hardware BO complete: {best}")
-
