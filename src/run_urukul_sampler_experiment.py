@@ -34,6 +34,7 @@ class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
             DeviceSpec("urukul0_cpld"),
             DeviceSpec("urukul0_dds"),
             DeviceSpec("suservo0"),
+            # suservo0_ch2
         ],
         channels=[
             ChannelSpec("adc_channel", default=0, minimum=0, maximum=7),
