@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Callable, List, Tuple
+from typing import Callable, List, Protocol, Tuple
 
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -18,6 +18,14 @@ from sklearn.gaussian_process.kernels import Matern, WhiteKernel
 class Parameter:
     name: str
     bounds: Tuple[float, float]
+
+
+class BOExperiment(Protocol):
+    def parameter_space(self) -> List[Parameter]:
+        """Returns the physical parameter definitions for BO."""
+
+    def evaluate(self, params: dict[str, float]) -> float:
+        """Returns objective value for the proposed physical params."""
 
 
 def normalize(params: List[Parameter], physical: dict) -> np.ndarray:
@@ -88,17 +96,16 @@ class SimpleBO:
 
 
 def run(
-    parameters: List[Parameter],
+    experiment: BOExperiment,
     init_trials: int = 5,
     max_trials: int = 100,
     seed: int = 123,
     stabilizer: Callable[[dict], None] | None = None,
-    objective_fn: Callable[[dict], float] | None = None,
 ) -> dict:
     random.seed(seed)
     np.random.seed(seed)
     stabilize = stabilizer or (lambda _: None)
-    objective = objective_fn or evaluate
+    parameters = experiment.parameter_space()
 
     bo = SimpleBO(parameters)
     initial = latin_hypercube(parameters, init_trials)
@@ -108,7 +115,7 @@ def run(
     for t in range(max_trials):
         proposal = initial[t] if t < init_trials else denormalize(parameters, bo.suggest())
         stabilize(proposal)
-        objective_value = objective(proposal)
+        objective_value = experiment.evaluate(proposal)
         bo.observe(normalize(parameters, proposal), objective_value)
         if objective_value > best["objective"]:
             best = {"params": proposal, "objective": objective_value}

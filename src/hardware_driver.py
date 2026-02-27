@@ -1,14 +1,11 @@
-"""Minimal ARTIQ DAC->ADC driver for Bayesian optimization experiments.
-
-This module is intentionally small:
-- Write one zotino0 DAC channel.
-- Read one sampler0 ADC channel.
-- Return a scalar objective based on a target voltage.
-"""
+"""General ARTIQ scaffolding for Bayesian optimization experiments."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
+
+from main import Parameter, run as run_bo
 
 try:
     from artiq.experiment import EnvExperiment, NumberValue, delay, kernel, ms, us
@@ -35,40 +32,55 @@ except Exception as exc:  # pragma: no cover - allows import on non-ARTIQ hosts
     ms = 1e-3
     us = 1e-6
 
-class MeasurementResult:
-    def __init__(self, setpoint_v: float, measured_v: float, objective: float):
-        self.setpoint_v = setpoint_v
-        self.measured_v = measured_v
-        self.objective = objective
+
+@dataclass(frozen=True)
+class DeviceSpec:
+    """ARTIQ device to bind with setattr_device()."""
+
+    name: str
 
 
-class ZotinoSamplerExperiment(EnvExperiment):
-    """Single-channel DAC->ADC experiment for quick hardware BO tests."""
+@dataclass(frozen=True)
+class ChannelSpec:
+    """Integer-valued channel argument (e.g. dac_channel, adc_channel)."""
 
-    def build(self):
-        if not ARTIQ_AVAILABLE:
-            return
+    name: str
+    default: int = 0
+    minimum: int = 0
+    maximum: int = 31
 
-        self.setattr_device("core")
-        self.setattr_device("zotino0")
-        self.setattr_device("sampler0")
 
-        self.setattr_argument("dac_channel", NumberValue(default=0, step=1, ndecimals=0))
-        self.setattr_argument("adc_channel", NumberValue(default=0, step=1, ndecimals=0))
-        self.setattr_argument(
-            "target_voltage", NumberValue(default=1.0, unit="V", min=-10.0, max=10.0)
-        )
-        self.setattr_argument(
-            "initial_dac_voltage", NumberValue(default=0.0, unit="V", min=-10.0, max=10.0)
-        )
+@dataclass(frozen=True)
+class NumericArgSpec:
+    """Numeric host argument exposed with NumberValue."""
 
-    def prepare(self):
-        if not ARTIQ_AVAILABLE:
-            return
+    name: str
+    default: float
+    minimum: float | None = None
+    maximum: float | None = None
+    unit: str | None = None
+    integer: bool = False
+    step: float | None = None
 
-        self.dac_channel = int(self.dac_channel)
-        self.adc_channel = int(self.adc_channel)
-        self._sample_buffer = [0.0] * 8
+
+@dataclass(frozen=True)
+class BOExperimentConfig:
+    """Declarative config used to build a BO experiment."""
+
+    devices: list[DeviceSpec] = field(default_factory=list)
+    channels: list[ChannelSpec] = field(default_factory=list)
+    parameters: list[Parameter] = field(default_factory=list)
+    data_arguments: list[NumericArgSpec] = field(default_factory=list)
+
+
+class ConfigurableBOExperiment(EnvExperiment):
+    """General BO runner.
+
+    Users configure experiment shape declaratively through CONFIG and then
+    override only hardware-specific hooks.
+    """
+
+    CONFIG = BOExperimentConfig()
 
     def _ensure_artiq(self) -> None:
         if not ARTIQ_AVAILABLE:
@@ -77,73 +89,82 @@ class ZotinoSamplerExperiment(EnvExperiment):
                 f"Import error: {ARTIQ_IMPORT_ERROR}"
             )
 
-    @kernel
-    def init_hardware(self):
-        self.core.reset()
-        self.core.break_realtime()
+    def _number_value_for(self, spec: NumericArgSpec) -> NumberValue:
+        kwargs: dict[str, Any] = {"default": spec.default}
+        if spec.minimum is not None:
+            kwargs["min"] = spec.minimum
+        if spec.maximum is not None:
+            kwargs["max"] = spec.maximum
+        if spec.unit is not None:
+            kwargs["unit"] = spec.unit
+        if spec.step is not None:
+            kwargs["step"] = spec.step
+        if spec.integer:
+            kwargs["ndecimals"] = 0
+        return NumberValue(**kwargs)
 
-        self.zotino0.init()
-        delay(1 * ms)
+    def build(self):
+        if not ARTIQ_AVAILABLE:
+            return
 
-        self.sampler0.init()
-        delay(5 * ms)
+        for device in self.CONFIG.devices:
+            self.setattr_device(device.name)
 
-        # Unity gain (mu=0) on selected ADC channel.
-        self.sampler0.set_gain_mu(self.adc_channel, 0)
-        delay(100 * us)
+        for channel in self.CONFIG.channels:
+            self.setattr_argument(
+                channel.name,
+                NumberValue(
+                    default=channel.default,
+                    min=channel.minimum,
+                    max=channel.maximum,
+                    step=1,
+                    ndecimals=0,
+                ),
+            )
 
-    @kernel
-    def measure_once(self, dac_voltage: float) -> float:
-        self.core.break_realtime()
+        for argument in self.CONFIG.data_arguments:
+            self.setattr_argument(argument.name, self._number_value_for(argument))
 
-        if dac_voltage > 10.0:
-            dac_voltage = 10.0
-        if dac_voltage < -10.0:
-            dac_voltage = -10.0
+        self.setattr_argument("init_trials", NumberValue(default=5, step=1, ndecimals=0, min=1))
+        self.setattr_argument("max_trials", NumberValue(default=30, step=1, ndecimals=0, min=1))
+        self.setattr_argument("seed", NumberValue(default=123, step=1, ndecimals=0, min=0))
 
-        self.zotino0.set_dac([dac_voltage], [self.dac_channel])
-        delay(200 * us)
+    def prepare(self):
+        if not ARTIQ_AVAILABLE:
+            return
 
-        self.sampler0.sample(self._sample_buffer)
-        return self._sample_buffer[self.adc_channel]
+        for channel in self.CONFIG.channels:
+            setattr(self, channel.name, int(getattr(self, channel.name)))
 
-    def evaluate_for_params(self, params: dict[str, float]) -> float:
-        """Host-side objective callable shape compatible with your BO loop."""
-        self._ensure_artiq()
+        for argument in self.CONFIG.data_arguments:
+            current = getattr(self, argument.name)
+            casted = int(current) if argument.integer else float(current)
+            setattr(self, argument.name, casted)
 
-        setpoint = float(params["dac_voltage"])
-        measured = float(self.measure_once(setpoint))
-        error = measured - float(self.target_voltage)
-        return -(error * error)
+        self.init_trials = int(self.init_trials)
+        self.max_trials = int(self.max_trials)
+        self.seed = int(self.seed)
 
-    def evaluate_and_record(self, setpoint_v: float) -> MeasurementResult:
-        """Convenience method if you want measured voltage alongside objective."""
-        self._ensure_artiq()
+    def parameter_space(self) -> list[Parameter]:
+        if not self.CONFIG.parameters:
+            raise RuntimeError("CONFIG.parameters must include at least one Parameter.")
+        return self.CONFIG.parameters
 
-        measured = float(self.measure_once(float(setpoint_v)))
-        error = measured - float(self.target_voltage)
-        return MeasurementResult(
-            setpoint_v=float(setpoint_v),
-            measured_v=measured,
-            objective=-(error * error),
-        )
+    def setup_bo_run(self) -> None:
+        """Optional setup hook called once before the BO loop."""
+
+    def evaluate(self, params: dict[str, float]) -> float:
+        raise NotImplementedError("Subclasses must implement evaluate(params).")
 
     def run(self):
         self._ensure_artiq()
+        self.setup_bo_run()
 
-        self.init_hardware()
-        result = self.evaluate_and_record(float(self.initial_dac_voltage))
-        print(
-            "DAC={:.4f} V, ADC={:.4f} V, objective={:.6f}".format(
-                result.setpoint_v, result.measured_v, result.objective
-            )
+        best = run_bo(
+            experiment=self,
+            init_trials=self.init_trials,
+            max_trials=self.max_trials,
+            seed=self.seed,
         )
+        print(f"Hardware BO complete: {best}")
 
-
-def make_hardware_objective(experiment: ZotinoSamplerExperiment):
-    """Returns a function: f({'dac_voltage': ...}) -> objective."""
-
-    def objective(params: dict[str, float]) -> float:
-        return experiment.evaluate_for_params(params)
-
-    return objective
