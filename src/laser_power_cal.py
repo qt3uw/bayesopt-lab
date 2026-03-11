@@ -43,7 +43,7 @@ except Exception as exc:  # pragma: no cover - allows import on non-ARTIQ hosts
 
 
 # EDIT THESE FIRST
-# Detector calibration is fixed for tomorrow's setup at 633 nm.
+# Detector calibration is fixed for setup at 633 nm.
 RESPONSIVITY_A_PER_W = 0.33
 
 # WARNING: This must match the physical gain dial on the detector.
