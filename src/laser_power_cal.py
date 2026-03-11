@@ -3,6 +3,8 @@
 Edit the constants in the "EDIT THESE FIRST" section before a lab run. This
 experiment keeps DDS frequency fixed, varies only RF amplitude, and converts
 photodiode voltage into laser power using the detector calibration at 633 nm.
+
+MAKE SURE TO CHECK GAIN, DEFAULT DDS FREQ, DEFAULT TARGET POWER
 """
 
 from __future__ import annotations
@@ -259,8 +261,12 @@ class LaserPowerCalibration(EnvExperiment):
         total_v = 0.0
         i = 0
         while i < self.adc_averages:
+            self.suservo0.set_config(enable=0)
+            delay(5 * us)
             total_v += self.suservo0.get_adc(ADC_CHANNEL)
-            delay(20 * us)
+            delay(5 * us)
+            self.suservo0.set_config(enable=1)
+            delay(5 * us)
             i += 1
         return total_v / self.adc_averages
 
