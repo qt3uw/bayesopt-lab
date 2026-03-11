@@ -118,7 +118,12 @@ def run(
         bo.observe(normalize(parameters, proposal), objective_value)
         if objective_value > best["objective"]:
             best = {"params": proposal, "objective": objective_value}
-        print(f"trial {t:02d} | objective={objective_value:.4f} | params={proposal}")
+        metric_name = getattr(experiment, "_last_metric_name", None)
+        metric_value = getattr(experiment, "_last_metric_value", None)
+        metric_text = ""
+        if metric_name is not None and metric_value is not None:
+            metric_text = f" | {metric_name}={float(metric_value):.6f}"
+        print(f"trial {t:02d} | objective={objective_value:.4f}{metric_text} | params={proposal}")
 
     print("\nBest found:")
     print(best)

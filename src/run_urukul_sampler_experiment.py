@@ -113,6 +113,8 @@ class UrukulSamplerPowerBOExperiment(ConfigurableBOExperiment):
         self._ensure_artiq()
         amplitude = float(params["urukul_amplitude"])
         photodiode_v = float(self.measure_photodiode_voltage(amplitude))
+        self._last_metric_name = "voltage_v"
+        self._last_metric_value = photodiode_v
         power_nw = self._voltage_to_power_nw(photodiode_v)
         error = power_nw - float(self.target_power_nw)
         return -(error * error)
