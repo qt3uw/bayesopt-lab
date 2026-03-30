@@ -1,10 +1,10 @@
-"""Calibrate laser power by optimizing Urukul RF amplitude from photodiode readout.
+"""Calibrate laser power by optimizing Urukul RF amplitude from power meter readout.
 
 Edit the constants in the "EDIT THESE FIRST" section before a lab run. This
-experiment keeps DDS frequency fixed, varies only RF amplitude, and converts
-photodiode voltage into laser power using the detector calibration at 633 nm.
+experiment keeps DDS frequency fixed, varies only RF amplitude, and reads
+optical power directly from a Thorlabs power meter.
 
-MAKE SURE TO CHECK GAIN, DEFAULT DDS FREQ, DEFAULT TARGET POWER
+MAKE SURE TO CHECK WAVELENGTH_NM, DEFAULT DDS FREQ, DEFAULT TARGET POWER
 """
 
 from __future__ import annotations
@@ -41,33 +41,24 @@ except Exception as exc:  # pragma: no cover - allows import on non-ARTIQ hosts
     ms = 1e-3
     us = 1e-6
 
+try:
+    from ctypes import c_double, c_uint32, c_bool, c_int, c_int16, byref, create_string_buffer
+    from TLPMX import TLPMX, TLPM_DEFAULT_CHANNEL
+
+    TLPMX_AVAILABLE = True
+    TLPMX_IMPORT_ERROR = None
+except Exception as exc:
+    TLPMX_AVAILABLE = False
+    TLPMX_IMPORT_ERROR = exc
+
 
 # EDIT THESE FIRST
-# Detector calibration is fixed for setup at 633 nm.
-RESPONSIVITY_A_PER_W = 0.33
+# Must match the wavelength label on the power meter calibration.
+WAVELENGTH_NM = 633
 
-# WARNING: This must match the physical gain dial on the detector.
-# Verify the detector is set to 70 dB Hi-Z before running.
-# EDIT THESE FIRST
-# Match this to the physical knob position on the PDA36A2 before running.
-GAIN_SETTING_DB = 70  # options: 0, 10, 20, 30, 40, 50, 60, 70
-
-TIA_GAIN_HI_Z = {
-    0:  1.51e3,
-    10: 4.75e3,
-    20: 1.5e4,
-    30: 4.75e4,
-    40: 1.51e5,
-    50: 4.75e5,
-    60: 1.5e6,
-    70: 4.75e6,
-}
-
-TIA_GAIN_V_PER_A = TIA_GAIN_HI_Z[GAIN_SETTING_DB]
 WATTS_TO_NANOWATTS = 1e9
 
 # Hardware defaults.
-ADC_CHANNEL = 0
 DDS_PROFILE = 3
 DEFAULT_AOM_ENABLED = "on"
 DEFAULT_DDS_FREQUENCY_HZ = 200 * MHz
@@ -77,24 +68,15 @@ DEFAULT_ADC_AVERAGES = 8
 DEFAULT_INIT_TRIALS = 5
 DEFAULT_MAX_TRIALS = 30
 DEFAULT_SEED = 123
-AMPLITUDE_MIN = 0.05
+AMPLITUDE_MIN = 0.00
 AMPLITUDE_MAX = 0.95
 
 
 class PowerMeasurement:
-    def __init__(self, amplitude: float, photodiode_v: float, optical_power_nw: float, objective: float):
+    def __init__(self, amplitude: float, optical_power_nw: float, objective: float):
         self.amplitude = amplitude
-        self.photodiode_v = photodiode_v
         self.optical_power_nw = optical_power_nw
         self.objective = objective
-
-
-def voltage_to_power_w(voltage_v: float, dark_voltage_v: float) -> float:
-    return (voltage_v - dark_voltage_v) / (RESPONSIVITY_A_PER_W * TIA_GAIN_V_PER_A)
-
-
-def voltage_to_power_nw(voltage_v: float, dark_voltage_v: float) -> float:
-    return voltage_to_power_w(voltage_v, dark_voltage_v) * WATTS_TO_NANOWATTS
 
 
 class LaserPowerCalibration(EnvExperiment):
@@ -105,6 +87,13 @@ class LaserPowerCalibration(EnvExperiment):
             raise RuntimeError(
                 "ARTIQ is not available in this Python environment. "
                 f"Import error: {ARTIQ_IMPORT_ERROR}"
+            )
+
+    def _ensure_tlpmx(self) -> None:
+        if not TLPMX_AVAILABLE:
+            raise RuntimeError(
+                "TLPMX is not available in this Python environment. "
+                f"Import error: {TLPMX_IMPORT_ERROR}"
             )
 
     def build(self):
@@ -126,10 +115,6 @@ class LaserPowerCalibration(EnvExperiment):
         self.setattr_argument(
             "target_power_nw",
             NumberValue(default=DEFAULT_TARGET_POWER_NW, min=0.0, max=1e9),
-        )
-        self.setattr_argument(
-            "dark_voltage_v",
-            NumberValue(default=0.0, min=-10.0, max=10.0, unit="V"),
         )
         self.setattr_argument(
             "settle_time_ms",
@@ -158,7 +143,6 @@ class LaserPowerCalibration(EnvExperiment):
 
         self.dds_frequency_hz = float(self.dds_frequency_hz)
         self.target_power_nw = float(self.target_power_nw)
-        self.dark_voltage_v = float(self.dark_voltage_v)
         self.settle_time_ms = float(self.settle_time_ms)
 
         self.adc_averages = int(self.adc_averages)
@@ -167,7 +151,6 @@ class LaserPowerCalibration(EnvExperiment):
         self.seed = int(self.seed)
 
         self._aom_enabled = 1 if self.aom_enabled == "on" else 0
-        self._dark_offset_measured = False
 
     def parameter_space(self) -> list[Parameter]:
         return [Parameter("dds_amplitude", (AMPLITUDE_MIN, AMPLITUDE_MAX))]
@@ -184,15 +167,6 @@ class LaserPowerCalibration(EnvExperiment):
         error_nw = power_nw - self.target_power_nw
         return -(error_nw * error_nw)
 
-    def _measurement_from_voltage(self, amplitude: float, photodiode_v: float) -> PowerMeasurement:
-        power_nw = voltage_to_power_nw(photodiode_v, self.dark_voltage_v)
-        return PowerMeasurement(
-            amplitude=float(amplitude),
-            photodiode_v=float(photodiode_v),
-            optical_power_nw=float(power_nw),
-            objective=self._objective_from_power_nw(power_nw),
-        )
-
     def _print_run_summary(self) -> None:
         print("Laser power calibration settings:")
         print(f"  target_power_nw={self.target_power_nw:.3f}")
@@ -202,16 +176,12 @@ class LaserPowerCalibration(EnvExperiment):
         print(f"  settle_time_ms={self.settle_time_ms:.3f}")
         print(f"  init_trials={self.init_trials}")
         print(f"  max_trials={self.max_trials}")
-        print(f"  dark_voltage_v={self.dark_voltage_v:.6f}")
-        print(f"  detector_wavelength_nm=633")
-        print(f"  responsivity_a_per_w={RESPONSIVITY_A_PER_W}")
-        print(f"  tia_gain_v_per_a={TIA_GAIN_V_PER_A}")
+        print(f"  wavelength_nm={WAVELENGTH_NM}")
 
     @kernel
     def configure_dds_output(self, amplitude: float):
         self.core.break_realtime()
         self.suservo0.init()
-        self.suservo0.set_pgia_mu(ADC_CHANNEL, 0)
         if amplitude < 0.0:
             amplitude = 0.0
         if amplitude > 1.0:
@@ -243,6 +213,12 @@ class LaserPowerCalibration(EnvExperiment):
         self.suservo0_ch3.set_y(DDS_PROFILE, amplitude)
 
     @kernel
+    def set_amplitude_and_settle(self, amplitude: float):
+        self.core.break_realtime()
+        self.set_dds_amplitude(amplitude)
+        delay(self.settle_time_ms * ms)
+
+    @kernel
     def init_hardware(self):
         self.core.reset()
         self.core.break_realtime()
@@ -252,60 +228,57 @@ class LaserPowerCalibration(EnvExperiment):
         else:
             self.aom_off()
 
-    @kernel
-    def measure_photodiode_voltage(self, amplitude: float) -> float:
-        self.core.break_realtime()
-        self.set_dds_amplitude(amplitude)
-        delay(self.settle_time_ms * ms)
-
-        total_v = 0.0
-        i = 0
-        while i < self.adc_averages:
-            self.suservo0.set_config(enable=0)
-            delay(5 * us)
-            total_v += self.suservo0.get_adc(ADC_CHANNEL)
-            delay(5 * us)
-            self.suservo0.set_config(enable=1)
-            delay(5 * us)
-            i += 1
-        return total_v / self.adc_averages
-
-    def measure_dark_offset(self) -> float:
-        self._ensure_artiq()
-        if self._dark_offset_measured:
-            return self.dark_voltage_v
-        # Dark offset is defined here as the photodiode reading at RF amplitude = 0.
-        self.dark_voltage_v = float(self.measure_photodiode_voltage(0.0))
-        self._dark_offset_measured = True
-        return self.dark_voltage_v
+    def measure_power_nw(self, amplitude: float) -> float:
+        self.set_amplitude_and_settle(amplitude)
+        power = c_double()
+        total = 0.0
+        for _ in range(self.adc_averages):
+            self._tlpm.measPower(byref(power), TLPM_DEFAULT_CHANNEL)
+            total += power.value
+        return (total / self.adc_averages) * WATTS_TO_NANOWATTS
 
     def evaluate(self, params: dict[str, float]) -> float:
         self._ensure_artiq()
         amplitude = float(params["dds_amplitude"])
-        photodiode_v = float(self.measure_photodiode_voltage(amplitude))
-        measurement = self._measurement_from_voltage(amplitude, photodiode_v)
+        power_nw = self.measure_power_nw(amplitude)
         self._last_metric_name = "power_nw"
-        self._last_metric_value = measurement.optical_power_nw
-        return measurement.objective
+        self._last_metric_value = power_nw
+        return self._objective_from_power_nw(power_nw)
 
     def evaluate_and_record(self, amplitude: float) -> PowerMeasurement:
         self._ensure_artiq()
-        photodiode_v = float(self.measure_photodiode_voltage(float(amplitude)))
-        return self._measurement_from_voltage(amplitude, photodiode_v)
+        power_nw = self.measure_power_nw(float(amplitude))
+        return PowerMeasurement(
+            amplitude=float(amplitude),
+            optical_power_nw=float(power_nw),
+            objective=self._objective_from_power_nw(power_nw),
+        )
 
     def run(self):
         self._ensure_artiq()
+        self._ensure_tlpmx()
         self._ensure_devices_present()
         self.init_hardware()
-        self.measure_dark_offset()
         self._print_run_summary()
 
-        best = run_bo(
-            experiment=self,
-            init_trials=self.init_trials,
-            max_trials=self.max_trials,
-            seed=self.seed,
-        )
+        resourceName = create_string_buffer(1024)
+        deviceCount = c_uint32()
+        self._tlpm = TLPMX()
+        self._tlpm.findRsrc(byref(deviceCount))
+        self._tlpm.getRsrcName(c_int(0), resourceName)
+        self._tlpm.open(resourceName, c_bool(True), c_bool(True))
+        self._tlpm.setWavelength(c_double(WAVELENGTH_NM), TLPM_DEFAULT_CHANNEL)
+        self._tlpm.setPowerUnit(c_int16(0), TLPM_DEFAULT_CHANNEL)  # 0 = Watts
+
+        try:
+            best = run_bo(
+                experiment=self,
+                init_trials=self.init_trials,
+                max_trials=self.max_trials,
+                seed=self.seed,
+            )
+        finally:
+            self._tlpm.close()
 
         best_amplitude = None
         if isinstance(best, dict):
@@ -318,7 +291,6 @@ class LaserPowerCalibration(EnvExperiment):
             print("\nBest laser power result:")
             print(f"  dds_amplitude={best_measurement.amplitude:.6f}")
             print(f"  optical_power_nw={best_measurement.optical_power_nw:.3f}")
-            print(f"  photodiode_voltage_v={best_measurement.photodiode_v:.6f}")
             print(f"  objective={best_measurement.objective:.3f}")
         else:
             print(f"Laser power calibration complete: {best}")
