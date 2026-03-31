@@ -67,7 +67,7 @@ class SimpleBO:
         self.parameters = parameters
         self.beta = beta
         kernel = Matern(length_scale=0.5, nu=2.5) + WhiteKernel(noise_level=1e-4)
-        self.gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True)
+        self.gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True, alpha=1e-6)
         self.X: List[np.ndarray] = []
         self.y: List[float] = []
 

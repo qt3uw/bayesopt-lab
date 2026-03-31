@@ -10,6 +10,7 @@ MAKE SURE TO CHECK WAVELENGTH_NM, DEFAULT DDS FREQ, DEFAULT TARGET POWER
 from __future__ import annotations
 
 from main import Parameter, run as run_bo
+import time
 
 try:
     from artiq.experiment import EnvExperiment, EnumerationValue, NumberValue, delay, kernel, MHz, ms, us
@@ -62,15 +63,14 @@ WATTS_TO_NANOWATTS = 1e9
 DDS_PROFILE = 3
 DEFAULT_AOM_ENABLED = "on"
 DEFAULT_DDS_FREQUENCY_HZ = 200 * MHz
-DEFAULT_TARGET_POWER_NW = 1000.0
-DEFAULT_SETTLE_TIME_MS = 1.0
+DEFAULT_TARGET_POWER_NW = 10.0
+DEFAULT_SETTLE_TIME_S = 1.0
 DEFAULT_ADC_AVERAGES = 8
 DEFAULT_INIT_TRIALS = 5
 DEFAULT_MAX_TRIALS = 30
 DEFAULT_SEED = 123
-AMPLITUDE_MIN = 0.00
-AMPLITUDE_MAX = 0.95
-
+AMPLITUDE_MIN = 0.05
+AMPLITUDE_MAX = 0.30
 
 class PowerMeasurement:
     def __init__(self, amplitude: float, optical_power_nw: float, objective: float):
@@ -118,23 +118,23 @@ class LaserPowerCalibration(EnvExperiment):
         )
         self.setattr_argument(
             "settle_time_ms",
-            NumberValue(default=DEFAULT_SETTLE_TIME_MS, min=0.01, max=1000.0, unit="ms"),
+            NumberValue(default=DEFAULT_SETTLE_TIME_S, min=0.1, max=1.0, unit="s"),
         )
         self.setattr_argument(
             "adc_averages",
-            NumberValue(default=DEFAULT_ADC_AVERAGES, min=1, max=1024, step=1, ndecimals=0),
+            NumberValue(default=DEFAULT_ADC_AVERAGES, min=1, max=1024, step=1, precision=0),
         )
         self.setattr_argument(
             "init_trials",
-            NumberValue(default=DEFAULT_INIT_TRIALS, min=1, step=1, ndecimals=0),
+            NumberValue(default=DEFAULT_INIT_TRIALS, min=1, step=1, precision=0),
         )
         self.setattr_argument(
             "max_trials",
-            NumberValue(default=DEFAULT_MAX_TRIALS, min=1, step=1, ndecimals=0),
+            NumberValue(default=DEFAULT_MAX_TRIALS, min=1, step=1, precision=0),
         )
         self.setattr_argument(
             "seed",
-            NumberValue(default=DEFAULT_SEED, min=0, step=1, ndecimals=0),
+            NumberValue(default=DEFAULT_SEED, min=0, step=1, precision=0),
         )
 
     def prepare(self):
@@ -216,7 +216,6 @@ class LaserPowerCalibration(EnvExperiment):
     def set_amplitude_and_settle(self, amplitude: float):
         self.core.break_realtime()
         self.set_dds_amplitude(amplitude)
-        delay(self.settle_time_ms * ms)
 
     @kernel
     def init_hardware(self):
@@ -230,6 +229,7 @@ class LaserPowerCalibration(EnvExperiment):
 
     def measure_power_nw(self, amplitude: float) -> float:
         self.set_amplitude_and_settle(amplitude)
+        time.sleep(DEFAULT_SETTLE_TIME_S)
         power = c_double()
         total = 0.0
         for _ in range(self.adc_averages):
@@ -286,11 +286,14 @@ class LaserPowerCalibration(EnvExperiment):
             if isinstance(params, dict):
                 best_amplitude = params.get("dds_amplitude")
 
-        if best_amplitude is not None:
-            best_measurement = self.evaluate_and_record(float(best_amplitude))
-            print("\nBest laser power result:")
-            print(f"  dds_amplitude={best_measurement.amplitude:.6f}")
-            print(f"  optical_power_nw={best_measurement.optical_power_nw:.3f}")
-            print(f"  objective={best_measurement.objective:.3f}")
-        else:
-            print(f"Laser power calibration complete: {best}")
+        print("params", params)
+        print("best ampltidue:", best_amplitude)
+
+        # if best_amplitude is not None:
+        #     best_measurement = self.evaluate_and_record(float(best_amplitude))
+        #     print("\nBest laser power result:")
+        #     print(f"  dds_amplitude={best_measurement.amplitude:.6f}")
+        #     print(f"  optical_power_nw={best_measurement.optical_power_nw:.3f}")
+        #     print(f"  objective={best_measurement.objective:.3f}")
+        # else:
+        #     print(f"Laser power calibration complete: {best}")
