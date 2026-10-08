@@ -1,30 +1,36 @@
 """
-Extremely minimal Bayesian optimization loop.
+Minimal Bayesian optimization loop: Gaussian process + UCB acquisition.
+
+Anything with `parameter_space()` and `evaluate(params)` can be optimized
+(see `Experiment`). Synthetic demo, no hardware needed:
+
+    python src/bo.py
 """
 
 from __future__ import annotations
 
 import math
 import random
-from typing import Callable, List, Protocol, Tuple
+from dataclasses import dataclass
+from typing import List, Protocol, Tuple
 
 import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel
 
 
+@dataclass
 class Parameter:
-    def __init__(self, name: str, bounds: Tuple[float, float]):
-        self.name = name
-        self.bounds = bounds
+    name: str
+    bounds: Tuple[float, float]  # physical (low, high)
 
 
-class BOExperiment(Protocol):
+class Experiment(Protocol):
     def parameter_space(self) -> List[Parameter]:
         """Returns the physical parameter definitions for BO."""
 
     def evaluate(self, params: dict[str, float]) -> float:
-        """Returns objective value for the proposed physical params."""
+        """Apply params, measure, return the objective. Higher is better."""
 
 
 def normalize(params: List[Parameter], physical: dict) -> np.ndarray:
@@ -51,22 +57,13 @@ def latin_hypercube(params: List[Parameter], n: int) -> List[dict]:
     return [denormalize(params, unit[i]) for i in range(n)]
 
 
-def evaluate(params: dict) -> float:
-    """
-    Synthetic objective to exercise the loop without hardware.
-    """
-    amp = params["noise_amp"]
-    freq = params["noise_freq"]
-    amp_peak = math.exp(-0.5 * ((amp - 2.2) / 0.8) ** 2)
-    freq_peak = math.exp(-0.5 * ((freq - 420.0) / 180.0) ** 2)
-    noise = random.gauss(0, 0.01)
-    return amp_peak * freq_peak + noise
-
 class SimpleBO:
     def __init__(self, parameters: List[Parameter], beta: float = 2.0):
         self.parameters = parameters
         self.beta = beta
-        kernel = Matern(length_scale=0.5, nu=2.5) + WhiteKernel(noise_level=1e-4)
+        # Without a length-scale floor the fit collapses to 1e-5 and BO degrades to random search.
+        matern = Matern(length_scale=0.5, length_scale_bounds=(0.01, 10.0), nu=2.5)
+        kernel = matern + WhiteKernel(noise_level=1e-4)
         self.gp = GaussianProcessRegressor(kernel=kernel, normalize_y=True, alpha=1e-6)
         self.X: List[np.ndarray] = []
         self.y: List[float] = []
@@ -76,16 +73,9 @@ class SimpleBO:
         if len(self.y) < dim + 1:
             return np.random.rand(dim)
 
-        X = np.vstack(self.X)
-        y = np.array(self.y)
-        self.gp.fit(X, y)
-
+        self.gp.fit(np.vstack(self.X), np.array(self.y))
         unit_candidates = np.random.rand(candidates, dim)
-        preds = self.gp.predict(unit_candidates, return_std=True)
-        if isinstance(preds, tuple):
-            mean, std = preds[0], preds[1]  # ignore any extra values
-        else:
-            mean, std = preds, np.zeros_like(preds)
+        mean, std = self.gp.predict(unit_candidates, return_std=True)
         ucb = mean + self.beta * std
         return unit_candidates[int(np.argmax(ucb))]
 
@@ -94,41 +84,39 @@ class SimpleBO:
         self.y.append(float(objective))
 
 
-def run(
-    experiment: BOExperiment,
-    init_trials: int = 5,
-    max_trials: int = 100,
-    seed: int = 123,
-    stabilizer: Callable[[dict], None] | None = None,
-) -> dict:
+def run(experiment: Experiment, init_trials: int = 5, max_trials: int = 100, seed: int = 123) -> dict:
     random.seed(seed)
     np.random.seed(seed)
-    stabilize = stabilizer or (lambda _: None)
     parameters = experiment.parameter_space()
 
     bo = SimpleBO(parameters)
     initial = latin_hypercube(parameters, init_trials)
-
     best = {"params": None, "objective": -float("inf")}
 
     for t in range(max_trials):
         proposal = initial[t] if t < init_trials else denormalize(parameters, bo.suggest())
-        stabilize(proposal)
-        objective_value = experiment.evaluate(proposal)
-        bo.observe(normalize(parameters, proposal), objective_value)
-        if objective_value > best["objective"]:
-            best = {"params": proposal, "objective": objective_value}
-        metric_name = getattr(experiment, "_last_metric_name", None)
-        metric_value = getattr(experiment, "_last_metric_value", None)
-        metric_text = ""
-        if metric_name is not None and metric_value is not None:
-            metric_text = f" | {metric_name}={float(metric_value):.6f}"
-        print(f"trial {t:02d} | objective={objective_value:.4f}{metric_text} | params={proposal}")
+        objective = float(experiment.evaluate(proposal))
+        bo.observe(normalize(parameters, proposal), objective)
+        if objective > best["objective"]:
+            best = {"params": proposal, "objective": objective}
+        print(f"trial {t:02d} | objective={objective:.4f} | params={proposal}")
 
-    print("\nBest found:")
-    print(best)
+    print(f"\nBest found: {best}")
     return best
 
 
-# if __name__ == "__main__":
-    
+class SyntheticExperiment:
+    """Gaussian hill peaked at noise_amp=2.2, noise_freq=420, max ~1.0."""
+
+    def parameter_space(self) -> List[Parameter]:
+        return [Parameter("noise_amp", (0.0, 5.0)), Parameter("noise_freq", (10.0, 2000.0))]
+
+    def evaluate(self, params: dict[str, float]) -> float:
+        amp_peak = math.exp(-0.5 * ((params["noise_amp"] - 2.2) / 0.8) ** 2)
+        freq_peak = math.exp(-0.5 * ((params["noise_freq"] - 420.0) / 180.0) ** 2)
+        return amp_peak * freq_peak + random.gauss(0, 0.01)
+
+
+if __name__ == "__main__":
+    best = run(SyntheticExperiment(), max_trials=30)
+    assert best["objective"] > 0.9, f"BO failed to find the synthetic peak: {best}"

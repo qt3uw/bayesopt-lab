@@ -1,55 +1,33 @@
-"""Example ARTIQ entrypoint: ADC/DAC Bayesian optimization experiment."""
+"""Example BO experiment: drive a Zotino DAC to hit a target voltage on a Sampler ADC.
 
-from __future__ import annotations
+Copy this file as the starting point for a new experiment.
 
-from main import Parameter
-from hardware_driver import (
-    ARTIQ_AVAILABLE,
-    BOExperimentConfig,
-    ChannelSpec,
-    ConfigurableBOExperiment,
-    DeviceSpec,
-    NumericArgSpec,
-    delay,
-    kernel,
-    ms,
-    us,
-)
+    artiq_run src/run_adc_dac_experiment.py --device-db src/device_db.py
+"""
+
+from artiq.experiment import NumberValue, delay, kernel, ms, us
+
+from artiq_bo import BOExperiment
+from bo import Parameter
 
 
-class MeasurementResult:
-    def __init__(self, setpoint_v: float, measured_v: float, objective: float):
-        self.setpoint_v = setpoint_v
-        self.measured_v = measured_v
-        self.objective = objective
-
-
-class ADCDACExperiment(ConfigurableBOExperiment):
-    """Example ADC/DAC BO experiment using Zotino and Sampler.
-
-    Override CONFIG and evaluate() for custom experiments.
-    """
-
-    CONFIG = BOExperimentConfig(
-        devices=[DeviceSpec("core"), DeviceSpec("zotino0"), DeviceSpec("sampler0")],
-        channels=[
-            ChannelSpec("dac_channel", default=0, minimum=0, maximum=31),
-            ChannelSpec("adc_channel", default=0, minimum=0, maximum=7),
-        ],
-        parameters=[Parameter("dac_voltage", (1.5, 1.6))],
-        data_arguments=[
-            NumericArgSpec("target_voltage", default=1.0, minimum=-10.0, maximum=10.0, unit="V"),
-            NumericArgSpec(
-                "initial_dac_voltage", default=0.0, minimum=-10.0, maximum=10.0, unit="V"
-            ),
-        ],
-    )
+class ADCDACExperiment(BOExperiment):
+    def build(self):
+        super().build()
+        self.setattr_device("core")
+        self.setattr_device("zotino0")
+        self.setattr_device("sampler0")
+        self.setattr_argument("dac_channel", NumberValue(0, min=0, max=31, step=1, precision=0))
+        self.setattr_argument("adc_channel", NumberValue(0, min=0, max=7, step=1, precision=0))
+        self.setattr_argument("target_voltage", NumberValue(1.0, min=-10.0, max=10.0, unit="V"))
 
     def prepare(self):
-        super().prepare()
-        if not ARTIQ_AVAILABLE:
-            return
+        self.dac_channel = int(self.dac_channel)
+        self.adc_channel = int(self.adc_channel)
         self._sample_buffer = [0.0] * 8
+
+    def parameter_space(self):
+        return [Parameter("dac_voltage", (1.5, 1.6))]
 
     @kernel
     def init_hardware(self):
@@ -78,22 +56,10 @@ class ADCDACExperiment(ConfigurableBOExperiment):
         self.sampler0.sample(self._sample_buffer)
         return self._sample_buffer[self.adc_channel]
 
-    def setup_bo_run(self) -> None:
+    def setup(self):
         self.init_hardware()
 
-    def evaluate(self, params: dict[str, float]) -> float:
-        self._ensure_artiq()
-        setpoint = float(params["dac_voltage"])
-        measured = float(self.measure_once(setpoint))
-        error = measured - float(self.target_voltage)
-        return -(error * error)
-
-    def evaluate_and_record(self, setpoint_v: float) -> MeasurementResult:
-        self._ensure_artiq()
-        measured = float(self.measure_once(float(setpoint_v)))
-        error = measured - float(self.target_voltage)
-        return MeasurementResult(
-            setpoint_v=float(setpoint_v),
-            measured_v=measured,
-            objective=-(error * error),
-        )
+    def evaluate(self, params):
+        measured = self.measure_once(params["dac_voltage"])
+        print(f"  measured_v={measured:.6f}")
+        return -(measured - self.target_voltage) ** 2

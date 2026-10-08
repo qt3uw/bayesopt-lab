@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayesopt-lab"
+version = "0.1.0"
+description = "Minimal Bayesian optimization loop."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "numpy>=1.24",
+  "scikit-learn>=1.3",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["bo"]
